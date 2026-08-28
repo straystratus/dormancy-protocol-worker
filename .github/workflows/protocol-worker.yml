@@ -1,0 +1,128 @@
+name: DORMANCY protocol worker
+
+on:
+  pull_request:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: dormancy-protocol-worker
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the pinned private source
+        uses: actions/checkout@v4
+        with:
+          repository: straystratus/dormancy
+          ref: ${{ vars.DORMANCY_SOURCE_REF }}
+          ssh-key: ${{ secrets.PRIVATE_REPO_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.17.0
+          cache: pnpm
+
+      - name: Validate the worker source
+        run: |
+          pnpm install --frozen-lockfile --prefer-offline
+          pnpm --filter @dormancy/core build
+          pnpm --filter @dormancy/ops lint
+          pnpm --filter @dormancy/ops typecheck
+          pnpm --filter @dormancy/ops test
+
+  settle:
+    if: ${{ github.event_name != 'pull_request' && vars.DORMANCY_TOKEN_MINT != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      SOLANA_RPC_URL: https://api.mainnet.solana.com
+      DORMANCY_TOKEN_MINT: ${{ vars.DORMANCY_TOKEN_MINT }}
+      DORMANCY_BONDING_CURVE_ADDRESS: ${{ vars.DORMANCY_BONDING_CURVE_ADDRESS }}
+      DORMANCY_FEE_VAULT_ADDRESS: FpCdXt6ycXTyi5TyFvVw3ege62Tdamn8u56tJpq2yJPq
+      DORMANCY_DEPLOYMENT_SLOT: ${{ vars.DORMANCY_DEPLOYMENT_SLOT }}
+      DORMANCY_EXCLUDED_ADDRESSES: ${{ vars.DORMANCY_EXCLUDED_ADDRESSES }}
+      DORMANCY_OPS_KEYPAIR_JSON: ${{ secrets.DORMANCY_OPS_KEYPAIR_JSON }}
+      BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out the pinned private source
+        uses: actions/checkout@v4
+        with:
+          repository: straystratus/dormancy
+          ref: ${{ vars.DORMANCY_SOURCE_REF }}
+          ssh-key: ${{ secrets.PRIVATE_REPO_DEPLOY_KEY }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.17.0
+          cache: pnpm
+
+      - name: Validate launch configuration
+        run: |
+          test -n "$DORMANCY_BONDING_CURVE_ADDRESS"
+          test -n "$DORMANCY_DEPLOYMENT_SLOT"
+          test -n "$DORMANCY_OPS_KEYPAIR_JSON"
+          test -n "$BLOB_READ_WRITE_TOKEN"
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile --prefer-offline
+
+      - name: Restore canonical index
+        run: |
+          mkdir -p .data .runtime
+          if gh release view protocol-state --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release download protocol-state --repo "$GITHUB_REPOSITORY" --pattern solana-index.json --dir .data --clobber
+          fi
+
+      - name: Materialize permissionless crank signer
+        run: |
+          umask 077
+          printf '%s' "$DORMANCY_OPS_KEYPAIR_JSON" > .runtime/ops-keypair.json
+
+      - name: Distribute, index, settle and publish
+        run: >-
+          pnpm --filter @dormancy/ops exec tsx src/cli.ts worker
+          --rpc-url "$SOLANA_RPC_URL"
+          --mint "$DORMANCY_TOKEN_MINT"
+          --bonding-curve "$DORMANCY_BONDING_CURVE_ADDRESS"
+          --fee-vault "$DORMANCY_FEE_VAULT_ADDRESS"
+          --deployment-slot "$DORMANCY_DEPLOYMENT_SLOT"
+          --exclude "$DORMANCY_EXCLUDED_ADDRESSES"
+          --index-file "$GITHUB_WORKSPACE/.data/solana-index.json"
+          --snapshot-file "$GITHUB_WORKSPACE/.data/protocol-snapshot.json"
+          --signer "$GITHUB_WORKSPACE/.runtime/ops-keypair.json"
+          --distribute --publish --send
+          --ack-mainnet=DORMANCY_MAINNET_FEES
+
+      - name: Publish public Vercel Blob snapshot
+        run: >-
+          pnpm --filter @dormancy/ops exec tsx src/cli.ts upload-snapshot
+          --snapshot-file "$GITHUB_WORKSPACE/.data/protocol-snapshot.json"
+          --pathname protocol/snapshot.json
+
+      - name: Persist canonical index
+        run: |
+          if ! gh release view protocol-state --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create protocol-state --repo "$GITHUB_REPOSITORY" --title "Protocol state" --notes "Machine-managed DORMANCY index state." --prerelease
+          fi
+          gh release upload protocol-state --repo "$GITHUB_REPOSITORY" .data/solana-index.json .data/protocol-snapshot.json --clobber
