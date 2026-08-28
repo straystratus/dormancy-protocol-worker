@@ -19,18 +19,18 @@ jobs:
       contents: read
     steps:
       - name: Check out the pinned private source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: straystratus/dormancy
           ref: ${{ vars.DORMANCY_SOURCE_REF }}
           ssh-key: ${{ secrets.PRIVATE_REPO_DEPLOY_KEY }}
           persist-credentials: false
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.15.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22.17.0
           cache: pnpm
@@ -61,18 +61,18 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out the pinned private source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: straystratus/dormancy
           ref: ${{ vars.DORMANCY_SOURCE_REF }}
           ssh-key: ${{ secrets.PRIVATE_REPO_DEPLOY_KEY }}
           persist-credentials: false
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.15.0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22.17.0
           cache: pnpm
